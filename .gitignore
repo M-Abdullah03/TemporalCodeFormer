@@ -13,7 +13,7 @@ version.py
 *.pth
 *.dat
 *.zip
-
+*.mp4
 # template
 
 # Byte-compiled / optimized / DLL files
@@ -128,4 +128,5 @@ tb_logger/
 run.sh
 *debug*
 *_old*
-
+final_results/
+pretrained_models/

@@ -162,8 +162,8 @@ if __name__ == '__main__':
     input_img_list = input_img_list[:n]
     length = len(input_img_list)
 
-    overlay = 4
-    chunk = 16
+    overlay = 2
+    chunk = 4
     idx_list = []
 
     i=0
@@ -177,6 +177,8 @@ if __name__ == '__main__':
     id_list = []
 
     # -------------------- start to processing ---------------------
+    #Log idx_list length
+    print(f'Total chunks to process: {len(idx_list)}')
     for i, idx in enumerate(idx_list):
         # clean all the intermediate results to process the next image
         face_helper.clean_all()
@@ -186,8 +188,12 @@ if __name__ == '__main__':
 
         img_list = input_img_list[start:end]
 
+        faces_per_frame = []
+        input_imgs = []  # store each frame's input image for paste-back
+        #Log total length
+        print(f'Total frames processed: {i}/{len(idx_list)}, processing img_list length: {len(img_list)}')
         for j, img_path in enumerate(img_list):
-        
+
             if isinstance(img_path, str):
                 img_name = os.path.basename(img_path)
                 basename, ext = os.path.splitext(img_name)
@@ -199,21 +205,24 @@ if __name__ == '__main__':
                 print(f'[{j+1}/{chunk}] Processing: {img_name}')
                 img = img_path
 
-            if args.has_aligned: 
+            if args.has_aligned:
                 # the input faces are already cropped and aligned
                 img = cv2.resize(img, (512, 512), interpolation=cv2.INTER_LINEAR)
                 face_helper.is_gray = is_gray(img, threshold=10)
                 if face_helper.is_gray:
                     print('Grayscale input: True')
                 face_helper.cropped_faces = [img]
+                faces_per_frame.append(1)
             else:
                 face_helper.read_image(img)
+                input_imgs.append(face_helper.input_img.copy())
                 # get face landmarks for each face
                 num_det_faces = face_helper.get_face_landmarks_5(
                     only_center_face=args.only_center_face, resize=640, eye_dist_threshold=5)
                 print(f'\tdetect {num_det_faces} faces')
                 # align and warp each face
-                face_helper.align_warp_face()    
+                face_helper.align_warp_face()
+                faces_per_frame.append(num_det_faces)    
 
         crop_image = []
         # face restoration for each cropped face
@@ -225,12 +234,12 @@ if __name__ == '__main__':
 
             crop_image.append(cropped_face_t)
         
-        assert len(crop_image)==len(img_list)
-
+        # Process all detected faces (can be multiple faces per frame)
         crop_image = torch.cat(crop_image, dim=0).to(device)
         crop_image = crop_image.unsqueeze(0)
 
-        output, top_idx = net.inference(crop_image, w=w, adain=True)
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            output, top_idx = net.inference(crop_image, w=w, adain=True)
         assert output.shape==crop_image.shape
 
         for k in range(output.shape[1]):
@@ -241,25 +250,36 @@ if __name__ == '__main__':
             cropped_face = face_helper.cropped_faces[k]
             face_helper.add_restored_face(restored_face, cropped_face)
 
-        bg_img_list = []
         # paste_back
+        restored_img_list = []
         if not args.has_aligned:
-            for img in img_list:
+            face_helper.get_inverse_affine(None)
+
+            # Split restored faces / affine matrices per frame and paste back one frame at a time
+            face_offset = 0
+            for frame_idx, img in enumerate(img_list):
+                n_faces = faces_per_frame[frame_idx]
+
                 # upsample the background
                 if bg_upsampler is not None:
-                    # Now only support RealESRGAN for upsampling background
                     bg_img = bg_upsampler.enhance(img, outscale=args.upscale)[0]
                 else:
                     bg_img = None
-                bg_img_list.append(bg_img)
 
+                # Temporarily set face_helper state to this frame's data
+                frame_restored = face_helper.restored_faces[face_offset:face_offset + n_faces]
+                frame_affines = face_helper.inverse_affine_matrices[face_offset:face_offset + n_faces]
+                face_helper.input_img = input_imgs[frame_idx]
+                face_helper.restored_faces = frame_restored
+                face_helper.inverse_affine_matrices = frame_affines
 
-            face_helper.get_inverse_affine(None)
-            # paste each restored face to the input image
-            if args.face_upsample and face_upsampler is not None: 
-                restored_img_list = face_helper.paste_faces_to_input_image(upsample_img_list=bg_img_list, draw_box=args.draw_box, face_upsampler=face_upsampler)
-            else:
-                restored_img_list = face_helper.paste_faces_to_input_image(upsample_img_list=bg_img_list, draw_box=args.draw_box)
+                if args.face_upsample and face_upsampler is not None:
+                    result = face_helper.paste_faces_to_input_image(upsample_img=bg_img, draw_box=args.draw_box, face_upsampler=face_upsampler)
+                else:
+                    result = face_helper.paste_faces_to_input_image(upsample_img=bg_img, draw_box=args.draw_box)
+                restored_img_list.append(result)
+
+                face_offset += n_faces
 
         torch.cuda.empty_cache()
         
