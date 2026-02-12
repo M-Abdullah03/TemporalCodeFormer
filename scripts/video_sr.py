@@ -163,7 +163,7 @@ if __name__ == '__main__':
     length = len(input_img_list)
 
     overlay = 2
-    chunk = 4
+    chunk = 8
     idx_list = []
 
     i=0
