@@ -162,8 +162,8 @@ if __name__ == '__main__':
     input_img_list = input_img_list[:n]
     length = len(input_img_list)
 
-    overlay = 2
-    chunk = 4
+    overlay = 4
+    chunk = 16
     idx_list = []
 
     i=0
